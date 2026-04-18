@@ -1,14 +1,33 @@
-# Cordia Python SDK
+# Cordia
 
-Official analytics SDK for Discord bots using Cordia.
+The official Python analytics SDK for Discord bots.
 
-## Installation
+Async-first design built on `aiohttp`. Tracks commands, users, server count, and uptime with automatic batching and background heartbeat.
+
+[![PyPI](https://img.shields.io/pypi/v/cordia)](https://pypi.org/project/cordia/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+## Install
 
 ```bash
 pip install cordia
 ```
 
-## Basic Usage
+Requires Python 3.8+.
+
+## Quick Start
+
+```python
+import cordia
+import os
+
+client = cordia.CordiaClient(
+    api_key=os.getenv("CORDIA_API_KEY"),
+    bot_id=os.getenv("CORDIA_BOT_ID"),
+)
+```
+
+## Discord.py Example
 
 ```python
 import discord
@@ -20,31 +39,60 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Initialize cordia client
 cordia_client = cordia.CordiaClient(
     api_key=os.getenv("CORDIA_API_KEY"),
-    bot_id=os.getenv("CORDIA_BOT_ID")
+    bot_id=os.getenv("CORDIA_BOT_ID"),
 )
 
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
-    # Report guild count asynchronously
     await cordia_client.post_guild_count(len(bot.guilds))
-    
-    # Start the async background heartbeat and queue processor
     cordia_client.start(bot.loop)
 
 @bot.command()
 async def ping(ctx):
     await ctx.send("Pong!")
-    
-    # Track command
     await cordia_client.track_command(
         command="ping",
         user_id=str(ctx.author.id),
-        guild_id=str(ctx.guild.id) if ctx.guild else None
+        guild_id=str(ctx.guild.id) if ctx.guild else None,
     )
 
 bot.run(os.getenv("DISCORD_TOKEN"))
 ```
+
+## Configuration
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `api_key` | `str` | required | API key from the Cordia dashboard |
+| `bot_id` | `str` | required | Your bot's unique ID |
+| `base_url` | `str` | `https://api.cordialane.com/api/v1` | API endpoint |
+| `heartbeat_interval` | `int` | `30000` | Heartbeat interval (ms) |
+| `auto_heartbeat` | `bool` | `True` | Start heartbeat on `start()` |
+| `batch_size` | `int` | `10` | Events before auto-flush |
+| `flush_interval` | `int` | `5000` | Auto-flush interval (ms) |
+| `debug` | `bool` | `False` | Enable debug logging |
+
+## API
+
+| Method | Description |
+|--------|-------------|
+| `start(loop)` | Start background tasks (flush + heartbeat) |
+| `track_command(...)` | Queue a command event |
+| `track_user(...)` | Queue a user activity event |
+| `post_guild_count(count)` | Report server count (immediate) |
+| `start_heartbeat(loop)` | Start heartbeat manually |
+| `stop_heartbeat()` | Stop heartbeat |
+| `get_uptime()` | Returns uptime in ms |
+| `flush()` | Force-flush queued events |
+| `close()` | Stop tasks, flush, and close session |
+
+## Documentation
+
+Full guides and API reference at [docs.cordialane.com](https://docs.cordialane.com).
+
+## License
+
+MIT
