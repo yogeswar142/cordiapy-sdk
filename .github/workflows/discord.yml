@@ -1,0 +1,78 @@
+name: Cordia Discord Updates
+
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send Cordia Styled Notification
+        run: |
+          # Save commits safely
+          echo '${{ toJson(github.event.commits) }}' > commits.json
+
+          # Extract repo name only (remove username)
+          REPO_NAME=$(echo "${{ github.repository }}" | cut -d'/' -f2)
+
+          # Count commits
+          COUNT=$(jq 'length // 1' commits.json)
+
+          COMMITS=""
+
+          # Build commit list safely
+          while IFS= read -r row; do
+            ID=$(echo "$row" | jq -r '.id[0:7]')
+            MSG=$(echo "$row" | jq -r '.message' | head -n1)
+            URL=$(echo "$row" | jq -r '.url')
+            AUTHOR=$(echo "$row" | jq -r '.author.name')
+
+            COMMITS="${COMMITS}[\`$ID\`]($URL) **$MSG** — $AUTHOR"$'\n'
+          done < <(jq -c '.[]?' commits.json)
+
+          # Fallback
+          if [ -z "$COMMITS" ]; then
+            COMMITS="Single commit pushed"
+          fi
+
+          # Proper singular/plural text
+          if [ "$COUNT" -eq 1 ]; then
+            TEXT="1 new commit"
+          else
+            TEXT="$COUNT new commits"
+          fi
+
+          # Build formatted strings
+          TITLE="🚀 $REPO_NAME"
+          DESCRIPTION="**$TEXT** on \`${{ github.ref_name }}\`"$'\n\n'"$COMMITS"
+          FOOTER="Powered by Cordia • Pushed by ${{ github.actor }}"
+          REPO_URL="https://github.com/${{ github.repository }}"
+
+          # Create payload
+          jq -n \
+            --arg title "$TITLE" \
+            --arg desc "$DESCRIPTION" \
+            --arg footer "$FOOTER" \
+            --arg url "$REPO_URL" \
+            '{
+              username: "Cordia Platform",
+              avatar_url: "https://www.cordialane.com/cordialogo.png",
+              embeds: [{
+                title: $title,
+                url: $url,
+                color: 16737792,
+                description: $desc,
+                footer: {
+                  text: $footer
+                },
+                timestamp: now | todate
+              }]
+            }' > payload.json
+
+          # Send to Discord
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -d @payload.json \
+            "${{ secrets.DISCORD_WEBHOOK }}"
