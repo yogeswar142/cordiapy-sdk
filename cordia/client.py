@@ -2,14 +2,15 @@ import aiohttp
 import asyncio
 import time
 import logging
+import signal
 from typing import List, Dict, Any, Optional
 from .types import CordiaConfig
 
 logger = logging.getLogger('cordia')
 
 class CordiaClient:
-    def __init__(self, api_key: str, bot_id: str, base_url: str = 'https://cordlane-brain.onrender.com/api/v1', debug: bool = False):
-        self.config = CordiaConfig(api_key=api_key, bot_id=bot_id, base_url=base_url, debug=debug)
+    def __init__(self, api_key: str, bot_id: str, base_url: str = 'https://cordlane-brain.onrender.com/api/v1', debug: bool = False, batch_size: int = 10, flush_interval: int = 60000, auto_scale: bool = False):
+        self.config = CordiaConfig(api_key=api_key, bot_id=bot_id, base_url=base_url, debug=debug, batch_size=batch_size, flush_interval=flush_interval, auto_scale=auto_scale)
         self.headers = {
             'Authorization': f'Bearer {self.config.api_key}',
             'X-Bot-ID': self.config.bot_id,
@@ -40,6 +41,13 @@ class CordiaClient:
         
         if self.config.auto_heartbeat:
             self.start_heartbeat(loop)
+            
+        # Register graceful shutdown handlers
+        try:
+            loop.add_signal_handler(signal.SIGINT, lambda: asyncio.create_task(self.close()))
+            loop.add_signal_handler(signal.SIGTERM, lambda: asyncio.create_task(self.close()))
+        except NotImplementedError:
+            pass # Windows doesn't fully support loop.add_signal_handler
 
     def start_heartbeat(self, loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
         """Manually start the heartbeat system."""
@@ -84,6 +92,8 @@ class CordiaClient:
             async with session.post(f"{self.config.base_url}/heartbeat", json=payload) as resp:
                 if resp.status >= 400:
                     logger.debug(f"Heartbeat failed: {resp.status}")
+                elif self.config.debug:
+                    logger.debug("Heartbeat sent successfully.")
         except Exception as e:
             logger.debug(f"Heartbeat exception: {e}")
 
@@ -142,20 +152,40 @@ class CordiaClient:
         if not self.queue:
             return
             
+        # Enforce backpressure limit
+        if len(self.queue) > 1000:
+            if self.config.debug:
+                logger.debug(f"Queue exceeded 1000 items, dropping oldest {len(self.queue) - 1000} items.")
+            self.queue = self.queue[-1000:]
+            
         events_to_send = self.queue[:]
         self.queue = []
         
         session = await self._get_session()
         
-        for event in events_to_send:
-            try:
-                async with session.post(f"{self.config.base_url}{event['endpoint']}", json=event['payload']) as resp:
-                    if self.config.debug:
-                        logger.debug(f"Flushed event to {event['endpoint']}, status: {resp.status}")
-            except Exception as e:
-                logger.debug(f"Failed to flush event: {e}")
-                # Don't re-queue for now to match JS behavior of "fire and forget" on flush failure
-                # but in production we might want to retry
+        # Extract payload from queued objects
+        batch_payloads = [event['payload'] for event in events_to_send]
+        
+        try:
+            async with session.post(f"{self.config.base_url}/track-batch", json={"botId": self.config.bot_id, "events": batch_payloads}) as resp:
+                if resp.status == 429:
+                    if self.config.auto_scale:
+                        self.config.batch_size = int(self.config.batch_size * 1.5) + 10
+                        self.config.flush_interval += 10000
+                        logger.warning(f"Rate limited! Auto-scaled batch_size to {self.config.batch_size} and flush_interval to {self.config.flush_interval}ms")
+                    else:
+                        logger.warning("Rate limit exceeded. Consider increasing batch_size or enabling auto_scale.")
+                    self.queue = events_to_send + self.queue # Re-queue
+                elif resp.status >= 400:
+                    response_text = await resp.text()
+                    logger.debug(f"Batch flush failed ({resp.status}): {response_text}")
+                elif self.config.debug:
+                    logger.debug(f"Flushed {len(batch_payloads)} events to /track-batch, status: {resp.status}")
+        except Exception as e:
+            if self.config.debug:
+                logger.debug(f"Failed to flush events: {e}")
+            # Re-queue on failure for backpressure retry
+            self.queue = events_to_send + self.queue
 
     async def close(self):
         self._running = False

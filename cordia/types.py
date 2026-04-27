@@ -5,12 +5,13 @@ from dataclasses import dataclass
 class CordiaConfig:
     api_key: str
     bot_id: str
-    base_url: str = 'https://api.cordialane.com/api/v1'
+    base_url: str = 'https://cordlane-brain.onrender.com/api/v1'
     debug: bool = False
     heartbeat_interval: int = 30000
     batch_size: int = 10
-    flush_interval: int = 5000
+    flush_interval: int = 60000
     auto_heartbeat: bool = True
+    auto_scale: bool = False
 
 @dataclass
 class TrackCommandPayload:

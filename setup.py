@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="cordia",
-    version="1.0.0",
+    version="1.1.1",
     author="Cordia",
     description="Official analytics SDK for Discord bots using Cordia",
     long_description=long_description,
