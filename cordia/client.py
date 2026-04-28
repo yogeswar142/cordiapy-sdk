@@ -3,14 +3,27 @@ import asyncio
 import time
 import logging
 import signal
+import os
 from typing import List, Dict, Any, Optional
 from .schema import CordiaConfig
 
 logger = logging.getLogger('cordia')
 
 class CordiaClient:
-    def __init__(self, api_key: str, bot_id: str, base_url: str = 'https://cordlane-brain.onrender.com/api/v1', debug: bool = False, batch_size: int = 10, flush_interval: int = 60000, auto_scale: bool = False):
-        self.config = CordiaConfig(api_key=api_key, bot_id=bot_id, base_url=base_url, debug=debug, batch_size=batch_size, flush_interval=flush_interval, auto_scale=auto_scale)
+    def __init__(self, api_key: str, bot_id: str, base_url: Optional[str] = None, debug: bool = False, heartbeat_interval: int = 30000, batch_size: int = 10, flush_interval: int = 60000, auto_scale: bool = False):
+        # Resolve base_url: Arg > Env Var > Default
+        if base_url is None:
+            base_url = os.getenv("CORDIA_API_URL", "https://cordlane-brain.onrender.com/api/v1")
+            
+        if heartbeat_interval < 30000:
+             heartbeat_interval = 30000
+             logger.warning("heartbeat_interval cannot be less than 30000ms. Setting to 30000ms.")
+             
+        if flush_interval < 60000:
+             flush_interval = 60000
+             logger.warning("flush_interval cannot be less than 60000ms. Setting to 60000ms.")
+
+        self.config = CordiaConfig(api_key=api_key, bot_id=bot_id, base_url=base_url, debug=debug, heartbeat_interval=heartbeat_interval, batch_size=batch_size, flush_interval=flush_interval, auto_scale=auto_scale)
         self.headers = {
             'Authorization': f'Bearer {self.config.api_key}',
             'X-Bot-ID': self.config.bot_id,
@@ -208,8 +221,9 @@ class CordiaClient:
                 elif resp.status in (401, 404):
                     error_data = await resp.json()
                     error_msg = error_data.get('error', 'Invalid API Key')
-                    logger.error(f"\n\n🚨 CORDIA SDK DISABLED: {error_msg}")
-                    logger.error("Please check your API key and Bot ID in the Cordia dashboard.\n")
+                    print(f"\n\n🚨 CORDIA SDK DISABLED: {error_msg}")
+                    print("Please check your API key and Bot ID in the Cordia dashboard.\n")
+                    logger.error(f"Cordia SDK Disabled: {error_msg}")
                     
                     # Disable the SDK
                     self._running = False
