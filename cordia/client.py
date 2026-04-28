@@ -4,7 +4,7 @@ import time
 import logging
 import signal
 from typing import List, Dict, Any, Optional
-from .types import CordiaConfig
+from .schema import CordiaConfig
 
 logger = logging.getLogger('cordia')
 
@@ -38,6 +38,7 @@ class CordiaClient:
         self._running = True
         loop = loop or asyncio.get_event_loop()
         self._tasks.append(loop.create_task(self._flush_loop()))
+        self._tasks.append(loop.create_task(self._verify_credentials()))
         
         if self.config.auto_heartbeat:
             self.start_heartbeat(loop)
@@ -196,3 +197,28 @@ class CordiaClient:
         await self.flush()
         if self._session and not self._session.closed:
             await self._session.close()
+
+    async def _verify_credentials(self):
+        """Verify API credentials and disable SDK if they are invalid (401/404)."""
+        session = await self._get_session()
+        try:
+            async with session.get(f"{self.config.base_url}/auth/verify") as resp:
+                if resp.status == 200:
+                    logger.info(f"Cordia SDK verified successfully for bot: {self.config.bot_id}")
+                elif resp.status in (401, 404):
+                    error_data = await resp.json()
+                    error_msg = error_data.get('error', 'Invalid API Key')
+                    logger.error(f"\n\n🚨 CORDIA SDK DISABLED: {error_msg}")
+                    logger.error("Please check your API key and Bot ID in the Cordia dashboard.\n")
+                    
+                    # Disable the SDK
+                    self._running = False
+                    self.stop_heartbeat()
+                    for task in self._tasks:
+                        if not task.done() and task.get_name() != asyncio.current_task().get_name():
+                            task.cancel()
+                    await self.flush()
+                else:
+                    logger.warning(f"Cordia verification skipped (Status: {resp.status}). The SDK will continue to attempt tracking.")
+        except Exception as e:
+            logger.debug(f"Verification exception: {e}")
