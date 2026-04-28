@@ -56,6 +56,8 @@ class CordiaClient:
         self._tasks: List[asyncio.Task] = []
         self._start_time = time.time()
         self._running = False
+        self._logged_shard_detection = False
+        self._warned_missing_shard = False
         
         if debug:
             logger.setLevel(logging.DEBUG)
@@ -136,6 +138,7 @@ class CordiaClient:
             logger.debug("Cordia bot_id unavailable. Skipping heartbeat until bot is ready.")
             return
         shard_meta = self._resolve_shard_meta()
+        self._log_shard_detection_once(shard_meta)
         payload = {
             'botId': bot_id,
             'uptime': self.get_uptime(),
@@ -256,11 +259,44 @@ class CordiaClient:
         if not bot_id:
             self.queue = events_to_send + self.queue
             return
+
+        # Batch optimization: if all events share the same shard meta, hoist it to the root
+        root_shard_id = None
+        root_total_shards = None
+        all_same_shard = True
+        for p in batch_payloads:
+            sid = p.get("shardId")
+            tss = p.get("totalShards")
+            if not isinstance(sid, int) or not isinstance(tss, int) or tss <= 0:
+                all_same_shard = False
+                break
+            if root_shard_id is None and root_total_shards is None:
+                root_shard_id, root_total_shards = sid, tss
+                continue
+            if root_shard_id != sid or root_total_shards != tss:
+                all_same_shard = False
+                break
+
+        if all_same_shard and root_shard_id is not None and root_total_shards is not None:
+            cleaned = []
+            for p in batch_payloads:
+                cp = dict(p)
+                cp.pop("shardId", None)
+                cp.pop("totalShards", None)
+                cleaned.append(cp)
+            batch_payloads_to_send = cleaned
+        else:
+            batch_payloads_to_send = batch_payloads
         
         try:
             async with session.post(
                 f"{self.config.base_url}/track-batch",
-                json={"botId": bot_id, "events": batch_payloads},
+                json={
+                    "botId": bot_id,
+                    "shardId": root_shard_id if all_same_shard else None,
+                    "totalShards": root_total_shards if all_same_shard else None,
+                    "events": batch_payloads_to_send
+                },
                 headers={'X-Bot-ID': bot_id}
             ) as resp:
                 if resp.status == 429:
@@ -325,6 +361,26 @@ class CordiaClient:
         detected_shard_id = getattr(self._discord_client, "shard_id", None)
         detected_total_shards = getattr(self._discord_client, "shard_count", None)
 
+        # AutoSharded bots may expose a `shards` mapping (e.g. discord.py AutoShardedClient)
+        shards = getattr(self._discord_client, "shards", None)
+        shard_keys = None
+        try:
+            if shards is not None:
+                shard_keys = list(getattr(shards, "keys", lambda: [])())
+        except Exception:
+            shard_keys = None
+
+        if not isinstance(detected_shard_id, int) and shard_keys and all(isinstance(k, int) for k in shard_keys):
+            # If only one shard is active in this process, we can safely use it.
+            if len(shard_keys) == 1:
+                detected_shard_id = shard_keys[0]
+            else:
+                # Multiple shards in one process: default to the lowest id unless caller provides shard_id.
+                detected_shard_id = min(shard_keys)
+
+        if (not isinstance(detected_total_shards, int) or detected_total_shards <= 0) and shard_keys and all(isinstance(k, int) for k in shard_keys):
+            detected_total_shards = len(shard_keys)
+
         resolved_shard_id = shard_id if isinstance(shard_id, int) else (
             detected_shard_id if isinstance(detected_shard_id, int) else self.config.shard_id
         )
@@ -332,7 +388,32 @@ class CordiaClient:
             detected_total_shards if isinstance(detected_total_shards, int) and detected_total_shards > 0 else self.config.total_shards
         )
 
+        # Debug warning for "ready state" issues (client passed but shard info not ready)
+        if self.config.debug and self._discord_client is not None and not self._warned_missing_shard:
+            client_has_no_shard_info = (
+                not isinstance(getattr(self._discord_client, "shard_id", None), int)
+                and not isinstance(getattr(self._discord_client, "shard_count", None), int)
+                and not shard_keys
+            )
+            using_fallback = resolved_shard_id == self.config.shard_id and resolved_total_shards == self.config.total_shards
+            if client_has_no_shard_info and using_fallback:
+                self._warned_missing_shard = True
+                logger.warning(
+                    "Discord client provided but shard info is not available yet. "
+                    "Cordia will keep resolving shard meta lazily, but if you see shardId=0/totalShards=1 unexpectedly, "
+                    "initialize Cordia after the bot is ready or pass shard_id/total_shards overrides."
+                )
+
         return {
             "shardId": resolved_shard_id,
             "totalShards": resolved_total_shards,
         }
+
+    def _log_shard_detection_once(self, shard_meta: Dict[str, int]) -> None:
+        if self._logged_shard_detection:
+            return
+        self._logged_shard_detection = True
+        if self.config.debug:
+            logger.info(
+                f"Detected shard meta: shardId={shard_meta.get('shardId')}, totalShards={shard_meta.get('totalShards')}"
+            )
