@@ -21,9 +21,10 @@ Requires Python 3.8+.
 import cordia
 import os
 
+# pass your discord.py bot/client instance
 client = cordia.CordiaClient(
     api_key=os.getenv("CORDIA_API_KEY"),
-    bot_id=os.getenv("CORDIA_BOT_ID"),
+    bot=bot,  # bot_id auto-detected from bot.user.id
 )
 ```
 
@@ -41,7 +42,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 cordia_client = cordia.CordiaClient(
     api_key=os.getenv("CORDIA_API_KEY"),
-    bot_id=os.getenv("CORDIA_BOT_ID"),
+    bot=bot,  # bot_id + shard metadata auto-detected
 )
 
 @bot.event
@@ -67,7 +68,8 @@ bot.run(os.getenv("DISCORD_TOKEN"))
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `api_key` | `str` | required | API key from the Cordia dashboard |
-| `bot_id` | `str` | required | Your bot's unique ID |
+| `bot` | `discord.Client` | recommended | Discord.py bot/client for bot_id + shard auto-detection |
+| `bot_id` | `str` | optional | Manual bot ID override (rarely needed) |
 | `base_url` | `str` | `https://api.cordialane.com/api/v1` | API endpoint |
 | `heartbeat_interval` | `int` | `30000` | Heartbeat interval (ms) |
 | `auto_heartbeat` | `bool` | `True` | Start heartbeat on `start()` |

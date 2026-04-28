@@ -10,7 +10,19 @@ from .schema import CordiaConfig
 logger = logging.getLogger('cordia')
 
 class CordiaClient:
-    def __init__(self, api_key: str, bot_id: str, debug: bool = False, heartbeat_interval: int = 30000, batch_size: int = 10, flush_interval: int = 60000, auto_scale: bool = False):
+    def __init__(
+        self,
+        api_key: str,
+        bot_id: Optional[str] = None,
+        debug: bool = False,
+        heartbeat_interval: int = 30000,
+        batch_size: int = 10,
+        flush_interval: int = 60000,
+        auto_scale: bool = False,
+        bot: Optional[Any] = None,
+        shard_id: int = 0,
+        total_shards: int = 1,
+    ):
         # Resolve base_url: Env Var > Default
         base_url = os.getenv("CORDIA_API_URL", "https://cordlane-brain.onrender.com/api/v1")
             
@@ -20,11 +32,24 @@ class CordiaClient:
         if flush_interval < 60000:
              flush_interval = 60000
 
-        self.config = CordiaConfig(api_key=api_key, bot_id=bot_id, base_url=base_url, debug=debug, heartbeat_interval=heartbeat_interval, batch_size=batch_size, flush_interval=flush_interval, auto_scale=auto_scale)
+        self.config = CordiaConfig(
+            api_key=api_key,
+            bot_id=bot_id,
+            base_url=base_url,
+            debug=debug,
+            heartbeat_interval=heartbeat_interval,
+            batch_size=batch_size,
+            flush_interval=flush_interval,
+            auto_scale=auto_scale,
+            shard_id=shard_id,
+            total_shards=total_shards,
+        )
+        self._discord_client = bot
         self.headers = {
             'Authorization': f'Bearer {self.config.api_key}',
-            'X-Bot-ID': self.config.bot_id,
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'X-Cordia-Sdk-Version': '1.1.5',
+            'User-Agent': 'cordia-py/1.1.5'
         }
         self.queue: List[Dict[str, Any]] = []
         self._session: Optional[aiohttp.ClientSession] = None
@@ -37,8 +62,20 @@ class CordiaClient:
         
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(headers=self.headers)
+            self._session = aiohttp.ClientSession(headers={
+                'Authorization': f'Bearer {self.config.api_key}',
+                'Content-Type': 'application/json',
+                'X-Cordia-Sdk-Version': '1.1.5',
+                'User-Agent': 'cordia-py/1.1.5'
+            })
         return self._session
+
+    def _resolve_bot_id(self) -> Optional[str]:
+        if self.config.bot_id:
+            return str(self.config.bot_id)
+        user = getattr(self._discord_client, "user", None)
+        runtime_bot_id = getattr(user, "id", None)
+        return str(runtime_bot_id) if runtime_bot_id is not None else None
 
     def start(self, loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
         """Start background tasks for flushing queue and heartbeat"""
@@ -94,13 +131,19 @@ class CordiaClient:
 
     async def _send_heartbeat(self):
         session = await self._get_session()
+        bot_id = self._resolve_bot_id()
+        if not bot_id:
+            logger.debug("Cordia bot_id unavailable. Skipping heartbeat until bot is ready.")
+            return
+        shard_meta = self._resolve_shard_meta()
         payload = {
-            'botId': self.config.bot_id,
+            'botId': bot_id,
             'uptime': self.get_uptime(),
-            'timestamp': self._now()
+            'timestamp': self._now(),
+            **shard_meta,
         }
         try:
-            async with session.post(f"{self.config.base_url}/heartbeat", json=payload) as resp:
+            async with session.post(f"{self.config.base_url}/heartbeat", json=payload, headers={'X-Bot-ID': bot_id}) as resp:
                 if resp.status >= 400:
                     logger.debug(f"Heartbeat failed: {resp.status}")
                 elif self.config.debug:
@@ -111,46 +154,79 @@ class CordiaClient:
     def _now(self) -> str:
         return time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime())
 
-    async def post_guild_count(self, count: int):
+    async def post_guild_count(self, count: int, shard_id: Optional[int] = None, total_shards: Optional[int] = None):
         session = await self._get_session()
+        bot_id = self._resolve_bot_id()
+        if not bot_id:
+            logger.debug("Cordia bot_id unavailable. Skipping guild count until bot is ready.")
+            return
+        shard_meta = self._resolve_shard_meta(shard_id=shard_id, total_shards=total_shards)
         payload = {
-            'botId': self.config.bot_id,
+            'botId': bot_id,
             'count': count,
-            'timestamp': self._now()
+            'timestamp': self._now(),
+            **shard_meta,
         }
         try:
-            async with session.post(f"{self.config.base_url}/guild-count", json=payload) as resp:
+            async with session.post(f"{self.config.base_url}/guild-count", json=payload, headers={'X-Bot-ID': bot_id}) as resp:
                 if self.config.debug:
                     logger.debug(f"Posted guild count: {count}, status: {resp.status}")
         except Exception as e:
             logger.debug(f"Failed to post guild count: {e}")
 
-    async def track_command(self, command: str, user_id: Optional[str] = None, guild_id: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None):
+    async def track_command(
+        self,
+        command: str,
+        user_id: Optional[str] = None,
+        guild_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        shard_id: Optional[int] = None,
+        total_shards: Optional[int] = None,
+    ):
+        bot_id = self._resolve_bot_id()
+        if not bot_id:
+            logger.debug("Cordia bot_id unavailable. Skipping command tracking until bot is ready.")
+            return
+        shard_meta = self._resolve_shard_meta(shard_id=shard_id, total_shards=total_shards)
         self.queue.append({
             'endpoint': '/track-command',
             'payload': {
-                'botId': self.config.bot_id,
+                'botId': bot_id,
                 'event': 'command_used',
                 'command': command,
                 'userId': user_id,
                 'guildId': guild_id,
                 'metadata': metadata,
-                'timestamp': self._now()
+                'timestamp': self._now(),
+                **shard_meta,
             }
         })
         if len(self.queue) >= self.config.batch_size:
             await self.flush()
 
-    async def track_user(self, user_id: str, action: str = 'interaction', guild_id: Optional[str] = None):
+    async def track_user(
+        self,
+        user_id: str,
+        action: str = 'interaction',
+        guild_id: Optional[str] = None,
+        shard_id: Optional[int] = None,
+        total_shards: Optional[int] = None,
+    ):
+        bot_id = self._resolve_bot_id()
+        if not bot_id:
+            logger.debug("Cordia bot_id unavailable. Skipping user tracking until bot is ready.")
+            return
+        shard_meta = self._resolve_shard_meta(shard_id=shard_id, total_shards=total_shards)
         self.queue.append({
             'endpoint': '/track-user',
             'payload': {
-                'botId': self.config.bot_id,
+                'botId': bot_id,
                 'event': 'user_active',
                 'userId': user_id,
                 'action': action,
                 'guildId': guild_id,
-                'timestamp': self._now()
+                'timestamp': self._now(),
+                **shard_meta,
             }
         })
         if len(self.queue) >= self.config.batch_size:
@@ -176,9 +252,17 @@ class CordiaClient:
         
         # Extract payload from queued objects
         batch_payloads = [event['payload'] for event in events_to_send]
+        bot_id = self._resolve_bot_id()
+        if not bot_id:
+            self.queue = events_to_send + self.queue
+            return
         
         try:
-            async with session.post(f"{self.config.base_url}/track-batch", json={"botId": self.config.bot_id, "events": batch_payloads}) as resp:
+            async with session.post(
+                f"{self.config.base_url}/track-batch",
+                json={"botId": bot_id, "events": batch_payloads},
+                headers={'X-Bot-ID': bot_id}
+            ) as resp:
                 if resp.status == 429:
                     if self.config.auto_scale:
                         self.config.batch_size = int(self.config.batch_size * 1.5) + 10
@@ -211,15 +295,19 @@ class CordiaClient:
     async def _verify_credentials(self):
         """Verify API credentials and disable SDK if they are invalid (401/404)."""
         session = await self._get_session()
+        bot_id = self._resolve_bot_id()
+        if not bot_id:
+            logger.warning("Cordia verification skipped: bot_id unavailable until client is ready.")
+            return
         try:
-            async with session.get(f"{self.config.base_url}/auth/verify") as resp:
+            async with session.get(f"{self.config.base_url}/auth/verify", headers={'X-Bot-ID': bot_id}) as resp:
                 if resp.status == 200:
-                    logger.info(f"Cordia SDK verified successfully for bot: {self.config.bot_id}")
+                    logger.info(f"Cordia SDK verified successfully for bot: {bot_id}")
                 elif resp.status in (401, 404):
                     error_data = await resp.json()
                     error_msg = error_data.get('error', 'Invalid API Key')
                     print(f"\n🚨 CORDIA SDK DISABLED: {error_msg}")
-                    print("Please check your API key and Bot ID in the Cordia dashboard.\n")
+                    print("Please check your API key and bot identity in the Cordia dashboard.\n")
                     
                     # Disable the SDK
                     self._running = False
@@ -232,3 +320,19 @@ class CordiaClient:
                     logger.warning(f"Cordia verification skipped (Status: {resp.status}). The SDK will continue to attempt tracking.")
         except Exception as e:
             logger.debug(f"Verification exception: {e}")
+
+    def _resolve_shard_meta(self, shard_id: Optional[int] = None, total_shards: Optional[int] = None) -> Dict[str, int]:
+        detected_shard_id = getattr(self._discord_client, "shard_id", None)
+        detected_total_shards = getattr(self._discord_client, "shard_count", None)
+
+        resolved_shard_id = shard_id if isinstance(shard_id, int) else (
+            detected_shard_id if isinstance(detected_shard_id, int) else self.config.shard_id
+        )
+        resolved_total_shards = total_shards if isinstance(total_shards, int) and total_shards > 0 else (
+            detected_total_shards if isinstance(detected_total_shards, int) and detected_total_shards > 0 else self.config.total_shards
+        )
+
+        return {
+            "shardId": resolved_shard_id,
+            "totalShards": resolved_total_shards,
+        }
