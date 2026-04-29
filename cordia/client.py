@@ -48,8 +48,8 @@ class CordiaClient:
         self.headers = {
             'Authorization': f'Bearer {self.config.api_key}',
             'Content-Type': 'application/json',
-            'X-Cordia-Sdk-Version': '1.1.5',
-            'User-Agent': 'cordia-py/1.1.5'
+            'X-Cordia-Sdk-Version': '1.2.0',
+            'User-Agent': 'cordia-py/1.2.0'
         }
         self.queue: List[Dict[str, Any]] = []
         self._session: Optional[aiohttp.ClientSession] = None
