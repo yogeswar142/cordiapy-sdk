@@ -5,7 +5,7 @@ from dataclasses import dataclass
 class CordiaConfig:
     api_key: str
     bot_id: Optional[str] = None
-    base_url: str = 'https://cordlane-brain.onrender.com/api/v1'
+    base_url: str = 'https://api.cordialane.com/api/v1'
     debug: bool = False
     heartbeat_interval: int = 30000
     batch_size: int = 10

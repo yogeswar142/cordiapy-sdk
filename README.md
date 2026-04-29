@@ -70,7 +70,6 @@ bot.run(os.getenv("DISCORD_TOKEN"))
 | `api_key` | `str` | required | API key from the Cordia dashboard |
 | `bot` | `discord.Client` | recommended | Discord.py bot/client for bot_id + shard auto-detection |
 | `bot_id` | `str` | optional | Manual bot ID override (rarely needed) |
-| `base_url` | `str` | `https://api.cordialane.com/api/v1` | API endpoint |
 | `heartbeat_interval` | `int` | `30000` | Heartbeat interval (ms) |
 | `auto_heartbeat` | `bool` | `True` | Start heartbeat on `start()` |
 | `batch_size` | `int` | `10` | Events before auto-flush |

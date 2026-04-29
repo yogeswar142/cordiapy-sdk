@@ -23,8 +23,8 @@ class CordiaClient:
         shard_id: int = 0,
         total_shards: int = 1,
     ):
-        # Resolve base_url: Env Var > Default
-        base_url = os.getenv("CORDIA_API_URL", "https://cordlane-brain.onrender.com/api/v1")
+        # API production URL
+        base_url = "https://api.cordialane.com/api/v1"
             
         if heartbeat_interval < 30000:
              heartbeat_interval = 30000
@@ -155,7 +155,8 @@ class CordiaClient:
             logger.debug(f"Heartbeat exception: {e}")
 
     def _now(self) -> str:
-        return time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime())
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
     async def post_guild_count(self, count: int, shard_id: Optional[int] = None, total_shards: Optional[int] = None):
         session = await self._get_session()
