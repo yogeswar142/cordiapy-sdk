@@ -67,8 +67,8 @@ class CordiaClient:
             self._session = aiohttp.ClientSession(headers={
                 'Authorization': f'Bearer {self.config.api_key}',
                 'Content-Type': 'application/json',
-                'X-Cordia-Sdk-Version': '1.1.5',
-                'User-Agent': 'cordia-py/1.1.5'
+                'X-Cordia-Sdk-Version': '1.2.1',
+                'User-Agent': 'cordia-py/1.2.1'
             })
         return self._session
 
@@ -77,7 +77,10 @@ class CordiaClient:
             return str(self.config.bot_id)
         user = getattr(self._discord_client, "user", None)
         runtime_bot_id = getattr(user, "id", None)
-        return str(runtime_bot_id) if runtime_bot_id is not None else None
+        if runtime_bot_id is not None:
+            self.config.bot_id = str(runtime_bot_id) # Persist detected ID
+            return self.config.bot_id
+        return None
 
     def start(self, loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
         """Start background tasks for flushing queue and heartbeat"""
@@ -183,7 +186,6 @@ class CordiaClient:
         command: str,
         user_id: Optional[str] = None,
         guild_id: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
         shard_id: Optional[int] = None,
         total_shards: Optional[int] = None,
     ):
@@ -200,12 +202,14 @@ class CordiaClient:
                 'command': command,
                 'userId': user_id,
                 'guildId': guild_id,
-                'metadata': metadata,
                 'timestamp': self._now(),
                 **shard_meta,
             }
         })
         if len(self.queue) >= self.config.batch_size:
+            # ADAPTIVE LOGIC: Speed up if busy
+            if self.current_flush_interval > 15000:
+                self.current_flush_interval = max(15000, self.current_flush_interval - 5000)
             await self.flush()
 
     async def track_user(
@@ -234,6 +238,9 @@ class CordiaClient:
             }
         })
         if len(self.queue) >= self.config.batch_size:
+            # ADAPTIVE LOGIC: Speed up if busy
+            if self.current_flush_interval > 15000:
+                self.current_flush_interval = max(15000, self.current_flush_interval - 5000)
             await self.flush()
 
     def get_uptime(self) -> int:
@@ -249,8 +256,10 @@ class CordiaClient:
                 logger.debug(f"Queue exceeded 1000 items, dropping oldest {len(self.queue) - 1000} items.")
             self.queue = self.queue[-1000:]
             
-        events_to_send = self.queue[:]
-        self.queue = []
+        # Hard limit of 500 events per batch to stay under API validation limits
+        batch_limit = 500
+        events_to_send = self.queue[:batch_limit]
+        self.queue = self.queue[batch_limit:]
         
         session = await self._get_session()
         
@@ -312,7 +321,7 @@ class CordiaClient:
                     response_text = await resp.text()
                     logger.debug(f"Batch flush failed ({resp.status}): {response_text}")
                 elif self.config.debug:
-                    logger.debug(f"Flushed {len(batch_payloads)} events to /track-batch, status: {resp.status}")
+                    logger.debug(f"Flushed {len(batch_payloads_to_send)} events to /track-batch, status: {resp.status}")
         except Exception as e:
             if self.config.debug:
                 logger.debug(f"Failed to flush events: {e}")
@@ -339,7 +348,18 @@ class CordiaClient:
         try:
             async with session.get(f"{self.config.base_url}/auth/verify", headers={'X-Bot-ID': bot_id}) as resp:
                 if resp.status == 200:
+                    data = await resp.json()
                     logger.info(f"Cordia SDK verified successfully for bot: {bot_id}")
+                    
+                    # VERSION HANDSHAKE
+                    versioning = data.get('versioning')
+                    current_version = '1.2.1'
+                    if versioning:
+                        latest = versioning.get('latestSdkVersion')
+                        if latest and latest != current_version:
+                            print(f"\n[Cordia] 🆕 A new Python SDK version is available: {latest} (You are on {current_version})")
+                            print(f"[Cordia] Update to stay optimized: pip install cordia --upgrade\n")
+                            
                 elif resp.status in (401, 404):
                     error_data = await resp.json()
                     error_msg = error_data.get('error', 'Invalid API Key')
