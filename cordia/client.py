@@ -67,8 +67,8 @@ class CordiaClient:
             self._session = aiohttp.ClientSession(headers={
                 'Authorization': f'Bearer {self.config.api_key}',
                 'Content-Type': 'application/json',
-                'X-Cordia-Sdk-Version': '1.2.1',
-                'User-Agent': 'cordia-py/1.2.1'
+                'X-Cordia-Sdk-Version': '1.2.2',
+                'User-Agent': 'cordia-py/1.2.2'
             })
         return self._session
 
@@ -186,6 +186,8 @@ class CordiaClient:
         command: str,
         user_id: Optional[str] = None,
         guild_id: Optional[str] = None,
+        guild_name: Optional[str] = None,
+        locale: Optional[str] = None,
         shard_id: Optional[int] = None,
         total_shards: Optional[int] = None,
     ):
@@ -202,6 +204,8 @@ class CordiaClient:
                 'command': command,
                 'userId': user_id,
                 'guildId': guild_id,
+                'guildName': guild_name,
+                'locale': locale,
                 'timestamp': self._now(),
                 **shard_meta,
             }
@@ -212,36 +216,61 @@ class CordiaClient:
                 self.current_flush_interval = max(15000, self.current_flush_interval - 5000)
             await self.flush()
 
-    async def track_user(
-        self,
-        user_id: str,
-        action: str = 'interaction',
-        guild_id: Optional[str] = None,
-        shard_id: Optional[int] = None,
-        total_shards: Optional[int] = None,
-    ):
-        bot_id = self._resolve_bot_id()
-        if not bot_id:
-            logger.debug("Cordia bot_id unavailable. Skipping user tracking until bot is ready.")
-            return
-        shard_meta = self._resolve_shard_meta(shard_id=shard_id, total_shards=total_shards)
-        self.queue.append({
-            'endpoint': '/track-user',
-            'payload': {
-                'botId': bot_id,
-                'event': 'user_active',
-                'userId': user_id,
-                'action': action,
-                'guildId': guild_id,
-                'timestamp': self._now(),
-                **shard_meta,
-            }
-        })
-        if len(self.queue) >= self.config.batch_size:
-            # ADAPTIVE LOGIC: Speed up if busy
-            if self.current_flush_interval > 15000:
-                self.current_flush_interval = max(15000, self.current_flush_interval - 5000)
-            await self.flush()
+    async def track_interaction(self, interaction: Any):
+        """
+        Auto-detect and track a command from a Discord Interaction object.
+        Supports discord.py, disnake, and other libraries with similar structures.
+        """
+        try:
+            if not interaction:
+                return
+
+            # Detect command name
+            command = getattr(interaction, "command", None)
+            command_name = getattr(command, "name", None)
+            if not command_name:
+                # Fallback for raw interactions
+                data = getattr(interaction, "data", {})
+                command_name = data.get("name") if isinstance(data, dict) else None
+
+            if not command_name:
+                logger.debug("Could not detect command name from interaction.")
+                return
+
+            # Resolve user and guild
+            user = getattr(interaction, "user", getattr(interaction, "author", None))
+            guild = getattr(interaction, "guild", None)
+            
+            await self.track_command(
+                command=command_name,
+                user_id=str(user.id) if user else None,
+                guild_id=str(guild.id) if guild else None,
+                guild_name=getattr(guild, "name", None),
+                locale=getattr(interaction, "locale", None),
+            )
+        except Exception as e:
+            logger.debug(f"Auto-detection failed for interaction: {e}")
+
+    async def track_message(self, message: Any, command_name: str):
+        """
+        Auto-detect and track a command from a Discord Message object.
+        Useful for traditional prefix-based bots.
+        """
+        try:
+            if not message:
+                return
+
+            user = getattr(message, "author", None)
+            guild = getattr(message, "guild", None)
+
+            await self.track_command(
+                command=command_name,
+                user_id=str(user.id) if user else None,
+                guild_id=str(guild.id) if guild else None,
+                guild_name=getattr(guild, "name", None),
+            )
+        except Exception as e:
+            logger.debug(f"Auto-detection failed for message: {e}")
 
     def get_uptime(self) -> int:
         return int((time.time() - self._start_time) * 1000)
@@ -353,7 +382,7 @@ class CordiaClient:
                     
                     # VERSION HANDSHAKE
                     versioning = data.get('versioning')
-                    current_version = '1.2.1'
+                    current_version = '1.2.2'
                     if versioning:
                         latest = versioning.get('latestSdkVersion')
                         if latest and latest != current_version:
